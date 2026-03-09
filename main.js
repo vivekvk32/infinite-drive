@@ -38,7 +38,9 @@ const clock = new THREE.Clock();
 const roadsideProps = [];
 const obstacles = [];
 const pickups = [];
+const pickupBursts = [];
 const keys = { left: false, right: false };
+const sparkleTexture = createSparkleTexture();
 
 const state = {
   running: false,
@@ -246,6 +248,46 @@ function buildCar() {
   return group;
 }
 
+function createSparkleTexture() {
+  const canvas = document.createElement("canvas");
+  canvas.width = 64;
+  canvas.height = 64;
+  const context = canvas.getContext("2d");
+
+  const glow = context.createRadialGradient(32, 32, 2, 32, 32, 30);
+  glow.addColorStop(0, "rgba(255,255,255,1)");
+  glow.addColorStop(0.2, "rgba(255,245,210,0.98)");
+  glow.addColorStop(0.5, "rgba(255,220,140,0.45)");
+  glow.addColorStop(1, "rgba(255,220,140,0)");
+  context.fillStyle = glow;
+  context.beginPath();
+  context.arc(32, 32, 30, 0, Math.PI * 2);
+  context.fill();
+
+  context.strokeStyle = "rgba(255,255,255,0.95)";
+  context.lineWidth = 4;
+  context.lineCap = "round";
+  context.beginPath();
+  context.moveTo(32, 9);
+  context.lineTo(32, 55);
+  context.moveTo(9, 32);
+  context.lineTo(55, 32);
+  context.stroke();
+
+  context.strokeStyle = "rgba(255,248,215,0.8)";
+  context.lineWidth = 2;
+  context.beginPath();
+  context.moveTo(16, 16);
+  context.lineTo(48, 48);
+  context.moveTo(48, 16);
+  context.lineTo(16, 48);
+  context.stroke();
+
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  return texture;
+}
+
 function spawnObstacle() {
   const type = Math.random();
   let mesh;
@@ -404,12 +446,87 @@ function spawnPickup() {
   pickups.push({
     mesh,
     hitbox,
+    isDiamond,
     value,
     baseY,
     phase: Math.random() * Math.PI * 2,
     laneOffset,
     pathPosition,
   });
+}
+
+function spawnPickupBurst(position, isDiamond) {
+  const count = isDiamond ? 14 : 10;
+  const color = isDiamond ? 0x8ff8ff : 0xffdf73;
+  const positions = new Float32Array(count * 3);
+  const velocities = [];
+
+  for (let i = 0; i < count; i += 1) {
+    const angle = (Math.PI * 2 * i) / count + (Math.random() - 0.5) * 0.45;
+    const speed = (isDiamond ? 2.4 : 2) + Math.random() * (isDiamond ? 1.4 : 1.1);
+    velocities.push(
+      new THREE.Vector3(
+        Math.cos(angle) * speed * 0.42,
+        1.25 + Math.random() * 1.1,
+        Math.sin(angle) * speed * 0.28,
+      ),
+    );
+  }
+
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+
+  const material = new THREE.PointsMaterial({
+    color,
+    size: isDiamond ? 0.62 : 0.5,
+    map: sparkleTexture,
+    transparent: true,
+    opacity: 0.92,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+    sizeAttenuation: true,
+  });
+  const points = new THREE.Points(geometry, material);
+  points.position.copy(position);
+  points.position.y += 0.15;
+  scene.add(points);
+
+  const flashMaterial = new THREE.SpriteMaterial({
+    color,
+    map: sparkleTexture,
+    transparent: true,
+    opacity: isDiamond ? 0.34 : 0.26,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+  });
+  const flash = new THREE.Sprite(flashMaterial);
+  flash.position.copy(position);
+  flash.position.y += 0.2;
+  flash.scale.setScalar(isDiamond ? 1.35 : 1.08);
+  scene.add(flash);
+
+  pickupBursts.push({
+    points,
+    material,
+    positions,
+    velocities,
+    flash,
+    flashMaterial,
+    age: 0,
+    duration: isDiamond ? 0.58 : 0.48,
+    gravity: isDiamond ? 2.2 : 1.8,
+    drag: isDiamond ? 3.2 : 3.8,
+    baseSize: material.size,
+    flashBaseScale: flash.scale.x,
+  });
+}
+
+function disposePickupBurst(burst) {
+  scene.remove(burst.points);
+  scene.remove(burst.flash);
+  burst.points.geometry.dispose();
+  burst.material.dispose();
+  burst.flashMaterial.dispose();
 }
 
 function resetRun() {
@@ -434,6 +551,7 @@ function resetRun() {
   obstacles.splice(0).forEach(({ mesh }) => scene.remove(mesh));
   pickups.splice(0).forEach(({ mesh }) => scene.remove(mesh));
   roadsideProps.splice(0).forEach(({ group }) => scene.remove(group));
+  pickupBursts.splice(0).forEach(disposePickupBurst);
 
   setSaveStatus("");
   saveButton.disabled = false;
@@ -507,6 +625,7 @@ function animate() {
     updateGame(delta);
   }
 
+  updatePickupBursts(delta);
   updateCamera(delta);
   renderer.render(scene, camera);
 }
@@ -624,10 +743,44 @@ function updatePickups(delta) {
 
     if (carBox.intersectsBox(pickupBox)) {
       state.score += pickup.value;
+      spawnPickupBurst(pickup.mesh.position, pickup.isDiamond);
       scene.remove(pickup.mesh);
       pickups.splice(i, 1);
       continue;
     }
+  }
+}
+
+function updatePickupBursts(delta) {
+  for (let i = pickupBursts.length - 1; i >= 0; i -= 1) {
+    const burst = pickupBursts[i];
+    burst.age += delta;
+
+    const progress = burst.age / burst.duration;
+    if (progress >= 1) {
+      disposePickupBurst(burst);
+      pickupBursts.splice(i, 1);
+      continue;
+    }
+
+    for (let particleIndex = 0; particleIndex < burst.velocities.length; particleIndex += 1) {
+      const velocity = burst.velocities[particleIndex];
+      velocity.y -= burst.gravity * delta;
+      velocity.multiplyScalar(Math.max(0, 1 - burst.drag * delta));
+
+      const offset = particleIndex * 3;
+      burst.positions[offset] += velocity.x * delta;
+      burst.positions[offset + 1] += velocity.y * delta;
+      burst.positions[offset + 2] += velocity.z * delta;
+    }
+
+    burst.points.geometry.attributes.position.needsUpdate = true;
+    burst.material.opacity = (1 - progress) * 0.9;
+    burst.material.size = burst.baseSize * (1 + progress * 0.55);
+    burst.flashMaterial.opacity = (1 - progress) * 0.28;
+
+    const flashScale = burst.flashBaseScale * (1 + progress * 1.6);
+    burst.flash.scale.setScalar(flashScale);
   }
 }
 
