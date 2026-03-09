@@ -22,8 +22,6 @@ const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.outputColorSpace = THREE.SRGBColorSpace;
-renderer.shadowMap.enabled = true;
-renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 root.appendChild(renderer.domElement);
 
 const scene = new THREE.Scene();
@@ -37,7 +35,6 @@ const camera = new THREE.PerspectiveCamera(
 );
 
 const clock = new THREE.Clock();
-const roadSegments = [];
 const roadsideProps = [];
 const obstacles = [];
 const pickups = [];
@@ -55,6 +52,7 @@ const state = {
   acceleration: 1.6,
   score: 0,
   distance: 0,
+  playerOffset: 0,
   topScore: 0,
   topDistance: 0,
   spawnTimer: 0,
@@ -64,10 +62,17 @@ const state = {
 
 const track = {
   width: 11,
+  shoulderWidth: 14.8,
   laneX: [-3.2, 0, 3.2],
-  segmentLength: 18,
-  segmentCount: 12,
-  visibleStart: -20,
+  renderBehind: 20,
+  renderAhead: 190,
+  roadRows: 96,
+  markerSpacing: 8.5,
+};
+
+const roadSystem = {
+  roadGeometry: null,
+  shoulderGeometry: null,
 };
 
 driverNameInput.value = localStorage.getItem("arc-drive-driver-name") || "";
@@ -89,12 +94,6 @@ function setupScene() {
 
   const sun = new THREE.DirectionalLight(0xfff1d3, 2.1);
   sun.position.set(14, 22, 10);
-  sun.castShadow = true;
-  sun.shadow.mapSize.set(2048, 2048);
-  sun.shadow.camera.left = -24;
-  sun.shadow.camera.right = 24;
-  sun.shadow.camera.top = 24;
-  sun.shadow.camera.bottom = -24;
   scene.add(sun);
 
   const rim = new THREE.DirectionalLight(0x4db8ff, 1.1);
@@ -121,61 +120,32 @@ function buildEnvironment() {
   ground.position.y = -0.02;
   scene.add(ground);
 
-  for (let i = 0; i < track.segmentCount; i += 1) {
-    const segmentZ = track.visibleStart - i * track.segmentLength;
-    const segment = createRoadSegment(segmentZ);
-    roadSegments.push(segment);
-    scene.add(segment.group);
-  }
-}
+  roadSystem.shoulderGeometry = createRibbonGeometry(track.shoulderWidth, track.roadRows);
+  const shoulders = new THREE.Mesh(
+    roadSystem.shoulderGeometry,
+    new THREE.MeshStandardMaterial({
+      color: 0x72512d,
+      roughness: 0.98,
+    }),
+  );
+  shoulders.frustumCulled = false;
+  scene.add(shoulders);
 
-function createRoadSegment(z) {
-  const group = new THREE.Group();
-  group.position.z = z;
-
+  roadSystem.roadGeometry = createRibbonGeometry(track.width, track.roadRows);
+  const roadTexture = createRoadTexture();
   const road = new THREE.Mesh(
-    new THREE.BoxGeometry(track.width, 0.18, track.segmentLength),
+    roadSystem.roadGeometry,
     new THREE.MeshStandardMaterial({
       color: 0x242a30,
+      map: roadTexture,
       roughness: 0.96,
       metalness: 0.03,
     }),
   );
-  road.position.y = 0.04;
-  road.receiveShadow = true;
-  group.add(road);
+  road.frustumCulled = false;
+  scene.add(road);
 
-  const shoulderMaterial = new THREE.MeshStandardMaterial({
-    color: 0x72512d,
-    roughness: 0.98,
-  });
-
-  [-1, 1].forEach((direction) => {
-    const shoulder = new THREE.Mesh(
-      new THREE.BoxGeometry(1.7, 0.08, track.segmentLength),
-      shoulderMaterial,
-    );
-    shoulder.position.set(direction * (track.width / 2 + 0.85), 0.02, 0);
-    group.add(shoulder);
-  });
-
-  const markerMaterial = new THREE.MeshStandardMaterial({
-    color: 0xfff4cf,
-    emissive: 0xffd48a,
-    emissiveIntensity: 0.22,
-    roughness: 0.55,
-  });
-
-  for (let i = 0; i < 4; i += 1) {
-    const marker = new THREE.Mesh(
-      new THREE.BoxGeometry(0.28, 0.03, 2.2),
-      markerMaterial,
-    );
-    marker.position.set(0, 0.15, -6.2 + i * 4.4);
-    group.add(marker);
-  }
-
-  return { group };
+  updateRoadSurface();
 }
 
 function addSkyline() {
@@ -238,27 +208,22 @@ function buildCar() {
 
   const body = new THREE.Mesh(new THREE.BoxGeometry(2.5, 0.8, 4.2), paint);
   body.position.y = 0.95;
-  body.castShadow = true;
   group.add(body);
 
   const cabin = new THREE.Mesh(new THREE.BoxGeometry(1.8, 0.8, 1.9), glass);
   cabin.position.set(0, 1.55, -0.1);
-  cabin.castShadow = true;
   group.add(cabin);
 
   const hood = new THREE.Mesh(new THREE.BoxGeometry(2.15, 0.42, 1.3), paint);
   hood.position.set(0, 1.08, 1.36);
-  hood.castShadow = true;
   group.add(hood);
 
   const bumper = new THREE.Mesh(new THREE.BoxGeometry(2.35, 0.35, 0.36), dark);
   bumper.position.set(0, 0.7, 2.18);
-  bumper.castShadow = true;
   group.add(bumper);
 
   const spoiler = new THREE.Mesh(new THREE.BoxGeometry(1.8, 0.15, 0.34), dark);
   spoiler.position.set(0, 1.3, -2.08);
-  spoiler.castShadow = true;
   group.add(spoiler);
 
   const wheelGeo = new THREE.CylinderGeometry(0.42, 0.42, 0.46, 20);
@@ -267,7 +232,6 @@ function buildCar() {
       const wheel = new THREE.Mesh(wheelGeo, dark);
       wheel.rotation.z = Math.PI / 2;
       wheel.position.set(x, 0.52, z);
-      wheel.castShadow = true;
       group.add(wheel);
     }
   }
@@ -286,6 +250,8 @@ function spawnObstacle() {
   const type = Math.random();
   let mesh;
   let hitbox;
+  const laneOffset = randomLane();
+  const pathPosition = state.distance + 138 + Math.random() * 16;
 
   if (type < 0.4) {
     mesh = new THREE.Mesh(
@@ -331,15 +297,22 @@ function spawnObstacle() {
     hitbox = new THREE.Vector3(0.8, 0.8, 0.8);
   }
 
-  mesh.castShadow = true;
-  mesh.receiveShadow = true;
-  mesh.position.set(randomLane(), hitbox.y, -130);
+  const placement = getTrackPlacement(pathPosition, laneOffset);
+  mesh.position.set(placement.x, hitbox.y, placement.z);
+  mesh.rotation.y = placement.heading;
   scene.add(mesh);
-  obstacles.push({ mesh, hitbox });
+  obstacles.push({
+    mesh,
+    hitbox,
+    laneOffset,
+    pathPosition,
+  });
 }
 
 function spawnRoadsideProp() {
   const side = Math.random() > 0.5 ? 1 : -1;
+  const roadsideOffset = side * (8 + Math.random() * 12);
+  const pathPosition = state.distance + 146 + Math.random() * 18;
   const cluster = new THREE.Group();
   const trunk = new THREE.Mesh(
     new THREE.CylinderGeometry(0.12, 0.18, 1.3, 8),
@@ -362,9 +335,15 @@ function spawnRoadsideProp() {
   canopy.scale.y = 1.2;
   cluster.add(canopy);
 
-  cluster.position.set(side * (8 + Math.random() * 12), 0, -140);
+  const placement = getTrackPlacement(pathPosition, roadsideOffset);
+  cluster.position.set(placement.x, 0, placement.z);
+  cluster.rotation.y = placement.heading;
   scene.add(cluster);
-  roadsideProps.push(cluster);
+  roadsideProps.push({
+    group: cluster,
+    roadsideOffset,
+    pathPosition,
+  });
 }
 
 function spawnPickup() {
@@ -372,6 +351,8 @@ function spawnPickup() {
   const mesh = new THREE.Group();
   let hitbox;
   let value;
+  const laneOffset = randomLane();
+  const pathPosition = state.distance + 132 + Math.random() * 16;
 
   if (isDiamond) {
     const diamond = new THREE.Mesh(
@@ -384,7 +365,6 @@ function spawnPickup() {
         roughness: 0.18,
       }),
     );
-    diamond.castShadow = true;
     mesh.add(diamond);
     hitbox = new THREE.Vector3(0.65, 0.65, 0.65);
     value = 25;
@@ -400,7 +380,6 @@ function spawnPickup() {
       }),
     );
     coin.rotation.z = Math.PI / 2;
-    coin.castShadow = true;
     mesh.add(coin);
     hitbox = new THREE.Vector3(0.7, 0.7, 0.35);
     value = 10;
@@ -418,7 +397,9 @@ function spawnPickup() {
   mesh.add(ring);
 
   const baseY = 1.65 + Math.random() * 0.35;
-  mesh.position.set(randomLane(), baseY, -130);
+  const placement = getTrackPlacement(pathPosition, laneOffset);
+  mesh.position.set(placement.x, baseY, placement.z);
+  mesh.rotation.y = placement.heading;
   scene.add(mesh);
   pickups.push({
     mesh,
@@ -426,6 +407,8 @@ function spawnPickup() {
     value,
     baseY,
     phase: Math.random() * Math.PI * 2,
+    laneOffset,
+    pathPosition,
   });
 }
 
@@ -438,10 +421,11 @@ function resetRun() {
   state.speed = 0;
   state.score = 0;
   state.distance = 0;
+  state.playerOffset = 0;
   state.spawnTimer = 0;
   state.pickupTimer = 0;
   state.propTimer = 0;
-  car.position.x = 0;
+  car.position.x = getTrackPlacement(state.distance, 0).x;
   car.position.y = 0.55;
   car.rotation.set(0, 0, 0);
   keys.left = false;
@@ -449,15 +433,16 @@ function resetRun() {
 
   obstacles.splice(0).forEach(({ mesh }) => scene.remove(mesh));
   pickups.splice(0).forEach(({ mesh }) => scene.remove(mesh));
-  roadsideProps.splice(0).forEach((prop) => scene.remove(prop));
+  roadsideProps.splice(0).forEach(({ group }) => scene.remove(group));
 
   setSaveStatus("");
   saveButton.disabled = false;
   saveForm.classList.add("hidden");
   overlayTitle.textContent = "Press Start";
-  overlayCopy.textContent = "Build distance, grab pickups, and survive the traffic ahead.";
+  overlayCopy.textContent = "Build distance, handle the turns, grab pickups, and survive the traffic ahead.";
   actionButton.textContent = "Start Run";
   overlay.classList.remove("hidden");
+  updateRoadSurface();
   updatePauseButton();
   updateHud();
 }
@@ -535,21 +520,23 @@ function updateGame(delta) {
 
   const steer = (keys.right ? 1 : 0) - (keys.left ? 1 : 0);
   const lateralSpeed = 7.8 + state.speed * 0.055;
-  car.position.x += steer * lateralSpeed * delta;
-  car.position.x = THREE.MathUtils.clamp(car.position.x, -4.1, 4.1);
+  state.playerOffset += steer * lateralSpeed * delta;
+  state.playerOffset = THREE.MathUtils.clamp(state.playerOffset, -4.1, 4.1);
 
-  car.rotation.z = THREE.MathUtils.lerp(car.rotation.z, -steer * 0.2, 6 * delta);
-  car.rotation.y = THREE.MathUtils.lerp(car.rotation.y, -steer * 0.1, 5 * delta);
+  const carTrack = getTrackPlacement(state.distance, state.playerOffset);
+  const roadHeading = getRoadHeadingAtPath(state.distance + 8);
+  car.position.x = carTrack.x;
+  car.rotation.z = THREE.MathUtils.lerp(car.rotation.z, -steer * 0.2 - roadHeading * 0.22, 6 * delta);
+  car.rotation.y = THREE.MathUtils.lerp(car.rotation.y, -steer * 0.1 - roadHeading * 0.65, 5 * delta);
   car.position.y = 0.55 + Math.sin(state.distance * 0.16) * 0.03;
 
-  const moveBy = state.speed * delta;
-  recycleRoad(moveBy);
-  if (updateObstacles(moveBy)) {
+  updateRoadSurface();
+  if (updateObstacles(delta)) {
     updateHud();
     return;
   }
-  updatePickups(moveBy, delta);
-  updateRoadsideProps(moveBy);
+  updatePickups(delta);
+  updateRoadsideProps();
 
   if (state.spawnTimer >= Math.max(0.48, 1.26 - state.speed * 0.011)) {
     spawnObstacle();
@@ -569,16 +556,12 @@ function updateGame(delta) {
   updateHud();
 }
 
-function recycleRoad(moveBy) {
-  for (const segment of roadSegments) {
-    segment.group.position.z += moveBy;
-    if (segment.group.position.z > track.segmentLength) {
-      segment.group.position.z -= track.segmentLength * track.segmentCount;
-    }
-  }
+function updateRoadSurface() {
+  updateRibbonGeometry(roadSystem.shoulderGeometry, track.shoulderWidth, -0.01);
+  updateRibbonGeometry(roadSystem.roadGeometry, track.width, 0.05);
 }
 
-function updateObstacles(moveBy) {
+function updateObstacles(delta) {
   const carBox = new THREE.Box3().setFromCenterAndSize(
     new THREE.Vector3(car.position.x, 1.05, car.position.z),
     new THREE.Vector3(2.15, 1.2, 4.05),
@@ -586,8 +569,16 @@ function updateObstacles(moveBy) {
 
   for (let i = obstacles.length - 1; i >= 0; i -= 1) {
     const obstacle = obstacles[i];
-    obstacle.mesh.position.z += moveBy;
-    obstacle.mesh.rotation.y += deltaSpin(obstacle.mesh.position.x, moveBy);
+
+    if (obstacle.pathPosition < state.distance - 8) {
+      scene.remove(obstacle.mesh);
+      obstacles.splice(i, 1);
+      continue;
+    }
+
+    const placement = getTrackPlacement(obstacle.pathPosition, obstacle.laneOffset);
+    obstacle.mesh.position.set(placement.x, obstacle.mesh.position.y, placement.z);
+    obstacle.mesh.rotation.y = placement.heading + deltaSpin(obstacle.laneOffset, state.speed * delta);
 
     const obstacleBox = new THREE.Box3().setFromCenterAndSize(
       obstacle.mesh.position,
@@ -598,17 +589,12 @@ function updateObstacles(moveBy) {
       endRun();
       return true;
     }
-
-    if (obstacle.mesh.position.z > 22) {
-      scene.remove(obstacle.mesh);
-      obstacles.splice(i, 1);
-    }
   }
 
   return false;
 }
 
-function updatePickups(moveBy, delta) {
+function updatePickups(delta) {
   const carBox = new THREE.Box3().setFromCenterAndSize(
     new THREE.Vector3(car.position.x, 1.15, car.position.z),
     new THREE.Vector3(2.2, 1.5, 4.2),
@@ -616,7 +602,16 @@ function updatePickups(moveBy, delta) {
 
   for (let i = pickups.length - 1; i >= 0; i -= 1) {
     const pickup = pickups[i];
-    pickup.mesh.position.z += moveBy;
+
+    if (pickup.pathPosition < state.distance - 6) {
+      scene.remove(pickup.mesh);
+      pickups.splice(i, 1);
+      continue;
+    }
+
+    const placement = getTrackPlacement(pickup.pathPosition, pickup.laneOffset);
+    pickup.mesh.position.x = placement.x;
+    pickup.mesh.position.z = placement.z;
     pickup.phase += delta * 5.4;
     pickup.mesh.position.y = pickup.baseY + Math.sin(pickup.phase) * 0.25;
     pickup.mesh.rotation.y += delta * 3.2;
@@ -633,11 +628,6 @@ function updatePickups(moveBy, delta) {
       pickups.splice(i, 1);
       continue;
     }
-
-    if (pickup.mesh.position.z > 22) {
-      scene.remove(pickup.mesh);
-      pickups.splice(i, 1);
-    }
   }
 }
 
@@ -645,22 +635,28 @@ function deltaSpin(seed, moveBy) {
   return moveBy * 0.018 * (seed > 0 ? 1 : -1);
 }
 
-function updateRoadsideProps(moveBy) {
+function updateRoadsideProps() {
   for (let i = roadsideProps.length - 1; i >= 0; i -= 1) {
     const prop = roadsideProps[i];
-    prop.position.z += moveBy;
-    if (prop.position.z > 24) {
-      scene.remove(prop);
+
+    if (prop.pathPosition < state.distance - 10) {
+      scene.remove(prop.group);
       roadsideProps.splice(i, 1);
+      continue;
     }
+
+    const placement = getTrackPlacement(prop.pathPosition, prop.roadsideOffset);
+    prop.group.position.set(placement.x, prop.group.position.y, placement.z);
+    prop.group.rotation.y = placement.heading;
   }
 }
 
 function updateCamera(delta) {
-  const targetX = car.position.x * 0.32;
+  const curveAheadPlacement = getTrackPlacement(state.distance + 22, state.playerOffset * 0.18);
+  const targetX = curveAheadPlacement.x * 0.42 + state.playerOffset * 0.16;
   camera.position.x = THREE.MathUtils.lerp(camera.position.x, targetX, 3.2 * delta);
   camera.position.y = THREE.MathUtils.lerp(camera.position.y, 6.5, 1.8 * delta);
-  camera.lookAt(car.position.x * 0.25, 1.4, car.position.z - 11);
+  camera.lookAt(curveAheadPlacement.x, 1.4, car.position.z - 11);
 }
 
 function updateHud() {
@@ -788,6 +784,125 @@ function togglePause() {
 
 function randomLane() {
   return track.laneX[Math.floor(Math.random() * track.laneX.length)];
+}
+
+function getRoadCenterAtPath(pathPosition) {
+  return (
+    Math.sin(pathPosition * 0.011) * 2.6 +
+    Math.sin(pathPosition * 0.022 + 1.3) * 1.15
+  );
+}
+
+function getRoadHeadingAtPath(pathPosition) {
+  const sample = 2;
+  const before = getRoadCenterAtPath(pathPosition - sample);
+  const after = getRoadCenterAtPath(pathPosition + sample);
+  return Math.atan2(after - before, sample * 2);
+}
+
+function getWorldZFromPath(pathPosition) {
+  return car.position.z - (pathPosition - state.distance);
+}
+
+function getTrackPlacement(pathPosition, lateralOffset) {
+  const center = getRoadCenterAtPath(pathPosition);
+  const heading = getRoadHeadingAtPath(pathPosition);
+
+  return {
+    x: center + Math.cos(heading) * lateralOffset,
+    z: getWorldZFromPath(pathPosition),
+    heading,
+  };
+}
+
+function createRibbonGeometry(width, rows) {
+  const geometry = new THREE.BufferGeometry();
+  const positions = new Float32Array(rows * 2 * 3);
+  const uvs = new Float32Array(rows * 2 * 2);
+  const indices = [];
+
+  for (let row = 0; row < rows; row += 1) {
+    const v = row / (rows - 1);
+    const leftUvIndex = row * 4;
+    const rightUvIndex = leftUvIndex + 2;
+    uvs[leftUvIndex] = 0;
+    uvs[leftUvIndex + 1] = v * 18;
+    uvs[rightUvIndex] = 1;
+    uvs[rightUvIndex + 1] = v * 18;
+  }
+
+  for (let row = 0; row < rows - 1; row += 1) {
+    const base = row * 2;
+    indices.push(base, base + 1, base + 2, base + 1, base + 3, base + 2);
+  }
+
+  geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+  geometry.setAttribute("uv", new THREE.BufferAttribute(uvs, 2));
+  geometry.setIndex(indices);
+  geometry.computeVertexNormals();
+  return geometry;
+}
+
+function createRoadTexture() {
+  const canvas = document.createElement("canvas");
+  canvas.width = 256;
+  canvas.height = 1024;
+  const context = canvas.getContext("2d");
+
+  context.fillStyle = "#262c32";
+  context.fillRect(0, 0, canvas.width, canvas.height);
+
+  context.fillStyle = "rgba(255,255,255,0.035)";
+  for (let i = 0; i < 220; i += 1) {
+    const x = Math.random() * canvas.width;
+    const y = Math.random() * canvas.height;
+    const size = Math.random() * 3 + 1;
+    context.fillRect(x, y, size, size);
+  }
+
+  context.strokeStyle = "#f9efc6";
+  context.lineWidth = 12;
+  context.setLineDash([40, 32]);
+  context.beginPath();
+  context.moveTo(canvas.width / 2, 0);
+  context.lineTo(canvas.width / 2, canvas.height);
+  context.stroke();
+
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.wrapS = THREE.ClampToEdgeWrapping;
+  texture.wrapT = THREE.RepeatWrapping;
+  texture.repeat.set(1, 1);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  return texture;
+}
+
+function updateRibbonGeometry(geometry, width, y) {
+  const positions = geometry.attributes.position.array;
+  const halfWidth = width / 2;
+  const rowStep = (track.renderAhead + track.renderBehind) / (track.roadRows - 1);
+
+  for (let row = 0; row < track.roadRows; row += 1) {
+    const pathPosition = state.distance - track.renderBehind + row * rowStep;
+    const heading = getRoadHeadingAtPath(pathPosition);
+    const center = getRoadCenterAtPath(pathPosition);
+    const worldZ = getWorldZFromPath(pathPosition);
+    const perpendicularX = Math.cos(heading);
+    const perpendicularZ = -Math.sin(heading);
+    const leftIndex = row * 6;
+    const rightIndex = leftIndex + 3;
+
+    positions[leftIndex] = center - perpendicularX * halfWidth;
+    positions[leftIndex + 1] = y;
+    positions[leftIndex + 2] = worldZ - perpendicularZ * halfWidth;
+
+    positions[rightIndex] = center + perpendicularX * halfWidth;
+    positions[rightIndex + 1] = y;
+    positions[rightIndex + 2] = worldZ + perpendicularZ * halfWidth;
+  }
+
+  geometry.attributes.position.needsUpdate = true;
+  geometry.computeVertexNormals();
+  geometry.computeBoundingSphere();
 }
 
 function handleResize() {
