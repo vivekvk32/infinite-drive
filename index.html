@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Arc Drive</title>
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='16' fill='%230b1018'/%3E%3Cpath d='M14 40h36l-4-13a6 6 0 0 0-5.7-4.2H23.7A6 6 0 0 0 18 27z' fill='%23ff7b28'/%3E%3Ccircle cx='22' cy='42' r='5' fill='%23f6f3eb'/%3E%3Ccircle cx='42' cy='42' r='5' fill='%23f6f3eb'/%3E%3C/svg%3E"
+    />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <section class="hud">
+        <div class="brand">
+          <p class="eyebrow">Three.js Endless Runner</p>
+          <h1>Arc Drive</h1>
+        </div>
+        <div class="hud-right">
+          <button id="pause-button" class="control-button" type="button">Pause</button>
+          <div class="stats">
+            <div class="stat-card">
+              <span class="label">Points</span>
+              <strong id="score">0</strong>
+            </div>
+            <div class="stat-card">
+              <span class="label">Distance</span>
+              <strong id="distance">0 m</strong>
+            </div>
+            <div class="stat-card">
+              <span class="label">Speed</span>
+              <strong id="speed">0 km/h</strong>
+            </div>
+            <div class="stat-card">
+              <span class="label">Top Score</span>
+              <strong id="top-score">0 pts</strong>
+            </div>
+            <div class="stat-card">
+              <span class="label">Longest Drive</span>
+              <strong id="top-distance">0 m</strong>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="instructions">
+        <p>Use <kbd>A</kbd>/<kbd>D</kbd> or <kbd>&larr;</kbd>/<kbd>&rarr;</kbd> to steer.</p>
+        <p>Press <kbd>P</kbd> or <kbd>Esc</kbd> to pause. Collect coins and diamonds while dodging cones, barriers, and crates.</p>
+      </section>
+
+      <aside class="leaderboard" aria-label="Leaderboard">
+        <div class="leaderboard-header">
+          <p class="eyebrow">Database Leaderboard</p>
+          <h2>Top Drivers</h2>
+        </div>
+        <ol class="leaderboard-list" id="leaderboard-list"></ol>
+        <p class="leaderboard-empty hidden" id="leaderboard-empty">
+          No saved runs yet. Finish a run and save your name to start the board.
+        </p>
+      </aside>
+
+      <div id="game-root" aria-label="3D car game"></div>
+
+      <section class="overlay" id="overlay">
+        <div class="panel">
+          <p class="eyebrow">Arcade Endless Terrain</p>
+          <h2 id="overlay-title">Press Start</h2>
+          <p id="overlay-copy">
+            Build distance, grab pickups, and survive the traffic ahead.
+          </p>
+          <form class="save-form hidden" id="save-form">
+            <label for="driver-name">Driver name</label>
+            <div class="save-form-row">
+              <input
+                id="driver-name"
+                name="driver-name"
+                type="text"
+                maxlength="24"
+                autocomplete="nickname"
+                placeholder="Enter your name"
+              />
+              <button id="save-button" type="submit">Save Score</button>
+            </div>
+            <p class="save-status" id="save-status"></p>
+          </form>
+          <div class="panel-actions">
+            <button id="action-button" type="button">Start Run</button>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <script type="module" src="./main.js"></script>
+  </body>
+</html>
